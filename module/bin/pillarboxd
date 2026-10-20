@@ -29,7 +29,17 @@ capture_baseline() {
   od=$(echo "$d" | sed -n 's/.*Override density: //p' | head -n1)
   pd=$(echo "$d" | sed -n 's/.*Physical density: //p' | head -n1)
 
-  if [ -n "$os" ]; then so=1; bs=$os; else so=0; bs=$ps; fi
+  if [ -n "$os" ] && [ -f "$MARK" ] && [ "$os" = "$(cat "$MARK" 2>/dev/null)" ]; then
+    so=0
+    bs=$ps
+  elif [ -n "$os" ]; then
+    so=1
+    bs=$os
+  else
+    so=0
+    bs=$ps
+  fi
+
   if [ -n "$od" ]; then do=1; bd=$od; else do=0; bd=$pd; fi
   [ -z "$bd" ] && bd=320
 
@@ -158,6 +168,7 @@ run() {
 case "$1" in
   start)
     if alive; then echo "already running"; exit 0; fi
+    rm -f "$BASE"
     if command -v nohup >/dev/null 2>&1; then
       nohup "$0" __run >> "$LOG" 2>&1 &
     else
