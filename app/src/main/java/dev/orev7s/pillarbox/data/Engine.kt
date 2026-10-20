@@ -56,7 +56,7 @@ echo "CONFIG_END"
     }
 
     fun ensure(context: Context, dir: String): Boolean {
-        val staged = stageDaemon(context)
+        val staged = runCatching { stageDaemon(context) }.getOrNull() ?: return false
         val cmd = """
 D="$dir"
 mkdir -p "${'$'}D"

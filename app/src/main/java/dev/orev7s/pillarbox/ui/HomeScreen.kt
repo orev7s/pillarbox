@@ -144,7 +144,7 @@ fun HomeScreen(
             item {
                 Spacer(Modifier.height(10.dp))
                 Text(
-                    text = if (state.module) "Magisk module · engine at ${state.dir}" else "Standalone mode · engine at ${state.dir}",
+                    text = if (state.module) "Module active · engine at ${state.dir}" else "Standalone mode · engine at ${state.dir}",
                     fontSize = 10.sp,
                     color = TextDim.copy(alpha = 0.55f)
                 )
