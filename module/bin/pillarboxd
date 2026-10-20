@@ -1,0 +1,205 @@
+#!/system/bin/sh
+
+DIR=""
+if [ -d /data/adb/pillarbox ]; then DIR=/data/adb/pillarbox; elif [ -d /data/local/tmp/pillarbox ]; then DIR=/data/local/tmp/pillarbox; else DIR=/data/local/tmp/pillarbox; fi
+
+CONF="$DIR/config.json"
+PIDF="$DIR/pid"
+LOG="$DIR/engine.log"
+MARK="$DIR/applied"
+BASE="$DIR/baseline"
+
+mkdir -p "$DIR" 2>/dev/null
+[ -f "$CONF" ] || echo '{"enabled":false,"apps":{}}' > "$CONF" 2>/dev/null
+
+log() { echo "$(date '+%m-%d %H:%M:%S') $*" >> "$LOG" 2>/dev/null; }
+
+alive() {
+  [ -f "$PIDF" ] || return 1
+  pid=$(cat "$PIDF" 2>/dev/null)
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+capture_baseline() {
+  [ -s "$BASE" ] && return 0
+  s=$(wm size 2>/dev/null)
+  os=$(echo "$s" | sed -n 's/.*Override size: //p' | head -n1)
+  ps=$(echo "$s" | sed -n 's/.*Physical size: //p' | head -n1)
+  d=$(wm density 2>/dev/null)
+  od=$(echo "$d" | sed -n 's/.*Override density: //p' | head -n1)
+  pd=$(echo "$d" | sed -n 's/.*Physical density: //p' | head -n1)
+
+  if [ -n "$os" ]; then so=1; bs=$os; else so=0; bs=$ps; fi
+  if [ -n "$od" ]; then do=1; bd=$od; else do=0; bd=$pd; fi
+  [ -z "$bd" ] && bd=320
+
+  echo "$so $bs $do $bd" > "$BASE"
+  log "baseline $so $bs $do $bd"
+}
+
+read_baseline() {
+  capture_baseline
+  read sov BS_WXH dov BD < "$BASE" 2>/dev/null
+  BW=${BS_WXH%x*}
+  BH=${BS_WXH#*x}
+  case "$BW" in ''|*[!0-9]*) BW=0 ;; esac
+  case "$BH" in ''|*[!0-9]*) BH=0 ;; esac
+  case "$BD" in ''|*[!0-9]*) BD=320 ;; esac
+}
+
+restore() {
+  read_baseline
+  if [ "$sov" = "1" ]; then
+    wm size "$BS_WXH" >/dev/null 2>&1
+  else
+    wm size reset >/dev/null 2>&1
+  fi
+  if [ "$dov" = "1" ]; then
+    wm density "$BD" >/dev/null 2>&1
+  else
+    wm density reset >/dev/null 2>&1
+  fi
+  rm -f "$MARK"
+}
+
+foreground() {
+  pkg=$(dumpsys activity activities 2>/dev/null \
+    | grep -m1 -E 'topResumedActivity=|mResumedActivity=' \
+    | awk '{for(i=1;i<=NF;i++){if($i ~ /\//){split($i,a,"/");if(a[1] ~ /\./){print a[1];exit}}}}')
+  if [ -z "$pkg" ]; then
+    pkg=$(dumpsys window 2>/dev/null \
+      | grep -m1 'mCurrentFocus=' \
+      | awk '{for(i=1;i<=NF;i++){if($i ~ /\//){split($i,a,"/");if(a[1] ~ /\./){print a[1];exit}}}}')
+  fi
+  echo "$pkg"
+}
+
+ratio_for() {
+  [ -f "$CONF" ] || return 1
+  tr -d '\n\r' < "$CONF" \
+    | grep -o "\"$1\"[[:space:]]*:[[:space:]]*\"[0-9]*:[0-9]*\"" \
+    | head -n1 \
+    | sed 's/.*"\([0-9]*:[0-9]*\)"$/\1/'
+}
+
+apply_ratio() {
+  a=${1%%:*}
+  b=${1##*:}
+  read_baseline
+  if [ "$BW" -le 0 ] || [ "$BH" -le 0 ]; then return 1; fi
+
+  if [ $((BW * a)) -le $((BH * b)) ]; then
+    NW=$BW
+    NH=$((BW * a / b))
+  else
+    NH=$BH
+    NW=$((BH * b / a))
+  fi
+  NW=$((NW / 8 * 8))
+  NH=$((NH / 8 * 8))
+
+  wm size "${NW}x${NH}" >/dev/null 2>&1
+  echo "${NW}x${NH}" > "$MARK" 2>/dev/null
+  log "apply $1 -> ${NW}x${NH}"
+}
+
+run() {
+  echo $$ > "$PIDF"
+  capture_baseline
+  trap 'restore; rm -f "$PIDF"' EXIT INT TERM
+  log "engine start pid=$$ home=$DIR"
+  last=""
+  lastr=""
+
+  while :; do
+    if [ ! -f "$CONF" ]; then sleep 2; continue; fi
+
+    if ! grep -q '"enabled"[[:space:]]*:[[:space:]]*true' "$CONF"; then
+      [ -f "$MARK" ] && restore
+      last=""
+      lastr=""
+      sleep 2
+      continue
+    fi
+
+    p=$(foreground)
+    case "$p" in
+      ""|com.android.systemui|com.miui.home|*launcher*|dev.orev7s.pillarbox) want="" ;;
+      *) want=$(ratio_for "$p") ;;
+    esac
+
+    if [ -n "$want" ]; then
+      if [ "$last" != "$p" ] || [ "$lastr" != "$want" ]; then
+        apply_ratio "$want"
+        last="$p"
+        lastr="$want"
+      fi
+    else
+      if [ -f "$MARK" ]; then
+        restore
+        log "restore on ${p:-none}"
+      fi
+      last=""
+      lastr=""
+    fi
+
+    if [ -f "$LOG" ]; then
+      sz=$(wc -c < "$LOG" 2>/dev/null)
+      case "$sz" in ''|*[!0-9]*) sz=0 ;; esac
+      if [ "$sz" -gt 131072 ]; then
+        tail -c 32768 "$LOG" > "$LOG.tmp" 2>/dev/null && mv -f "$LOG.tmp" "$LOG"
+      fi
+    fi
+
+    sleep 1
+  done
+}
+
+case "$1" in
+  start)
+    if alive; then echo "already running"; exit 0; fi
+    if command -v nohup >/dev/null 2>&1; then
+      nohup "$0" __run >> "$LOG" 2>&1 &
+    else
+      "$0" __run >> "$LOG" 2>&1 &
+    fi
+    sleep 2
+    if alive; then echo "started"; else echo "failed"; exit 1; fi
+    ;;
+  stop)
+    if alive; then
+      pid=$(cat "$PIDF")
+      kill "$pid" 2>/dev/null
+      sleep 1
+      kill -9 "$pid" 2>/dev/null
+    fi
+    rm -f "$PIDF"
+    restore
+    echo "stopped"
+    ;;
+  restart)
+    "$0" stop >/dev/null
+    "$0" start
+    ;;
+  status)
+    if alive; then echo "running $(cat "$PIDF")"; else echo "stopped"; fi
+    ;;
+  baseline)
+    rm -f "$BASE"
+    capture_baseline
+    cat "$BASE"
+    ;;
+  state)
+    echo "baseline: $(cat "$BASE" 2>/dev/null)"
+    echo "applied: $(cat "$MARK" 2>/dev/null)"
+    wm size
+    wm density
+    ;;
+  __run)
+    run
+    ;;
+  *)
+    echo "usage: pillarboxd {start|stop|restart|status|baseline|state}"
+    exit 1
+    ;;
+esac

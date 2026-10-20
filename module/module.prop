@@ -1,0 +1,7 @@
+id=pillarbox
+name=PillarBox
+version=v1.0.0
+versionCode=10000
+author=orev7s
+description=Per-app 4:3 aspect engine for wide tablets. Selected apps render at a true 4:3 viewport, iPad style. Pair with the PillarBox app.
+updateJson=
